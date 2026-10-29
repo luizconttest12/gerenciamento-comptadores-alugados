@@ -1,4 +1,4 @@
-﻿document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', () => {
   const grid = document.querySelector('.impressoras-lista');
   const form = document.getElementById('printer-form');
   const dialog = document.getElementById('printer-dialog');
@@ -224,7 +224,6 @@
     grid.innerHTML = '<p class="printer-loading" role="status">Carregando impressoras...</p>';
     try {
       printers = await request();
-      render();
     } catch (error) {
       printers = [];
       updateSummary();

@@ -7,7 +7,7 @@
       href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="../css/redesign.css" />
+    <link rel="stylesheet" href="../css/redesign.css?v=global-notifications-4" />
     <link rel="icon" href="../img/chart_16270065 (1).png" type="image/x-icon" />
     <title>Gerenciamento de Computadores</title>
   </head>
@@ -33,7 +33,17 @@
         </ul>
       </nav>
       <p class="nome-user"></p>
-      <div class="foto-perfil" onclick="toggleMenu()">
+      <div class="global-notifications" aria-live="polite">
+          <button type="button" class="global-notifications-toggle" aria-label="Notificações de suprimentos" aria-expanded="false">
+            <i class="bx bx-bell" aria-hidden="true"></i>
+            <span class="global-notifications-badge" hidden>0</span>
+          </button>
+          <section class="global-notifications-panel" aria-label="Avisos de tinta e toner" hidden>
+            <h2>Avisos de suprimentos</h2>
+            <ul class="global-notifications-list"><li>Carregando estoque...</li></ul>
+          </section>
+        </div>
+        <div class="foto-perfil" onclick="toggleMenu()">
         <img src="../imagens/default.png" alt="Foto de perfil" />
         <div id="menu-perfil" class="menu-perfil">
           <ul>
@@ -122,6 +132,7 @@
     <script src="../js/auxiFunc.js"></script>
     <script src="../js/computadores.js"></script>
     <script src="../js/perfil_menu.js"></script>
+    <script src="../js/notificacoes.js?v=4"></script>
     <div class="alt-foto-box">
       <input type="file" accept="image/*" />
       <button class="btn-env-imagem">Salvar</button>

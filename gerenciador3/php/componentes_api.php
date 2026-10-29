@@ -14,12 +14,13 @@ exigirAutenticacao(1);
 
 function validarMaterial(array $data): array
 {
-    $categories = ['Teclado', 'Mouse', 'Monitor', 'Headset', 'Cabo', 'Adaptador', 'Tinta', 'Toner', 'Outro'];
-    $colors = ['', 'Preto', 'Ciano', 'Magenta', 'Amarelo', 'Colorida'];
+    $categories = ['Teclado', 'Mouse', 'Monitor', 'Cabo', 'Adaptador', 'Tinta', 'Toner', 'Outro'];
+    $colors = ['', 'Preto', 'Preto (monocromático)', 'Ciano', 'Magenta', 'Amarelo', 'Colorida'];
     $category = textoMaterial($data, 'category');
     $name = textoMaterial($data, 'name');
     $color = textoMaterial($data, 'color');
     $compatibility = textoMaterial($data, 'compatibility');
+    $serialNumber = textoMaterial($data, 'serial_number');
     $location = textoMaterial($data, 'location');
     $quantity = inteiroMaterial($data['quantity'] ?? null);
     $minimum = inteiroMaterial($data['minimum_quantity'] ?? null);
@@ -29,6 +30,13 @@ function validarMaterial(array $data): array
     }
     if ($name === '' || tamanhoTexto($name) > 150) {
         enviarJson(['success' => false, 'message' => 'Informe o nome ou modelo (até 150 caracteres).'], 422);
+    }
+    if (in_array($category, ['Teclado', 'Mouse'], true)
+        && ($serialNumber === '' || tamanhoTexto($serialNumber) > 150)) {
+        enviarJson(['success' => false, 'message' => 'Informe o número de série do teclado ou mouse (até 150 caracteres).'], 422);
+    }
+    if (tamanhoTexto($serialNumber) > 150) {
+        enviarJson(['success' => false, 'message' => 'O número de série aceita até 150 caracteres.'], 422);
     }
     if ($quantity === false || $quantity < 0 || $quantity > 1000000
         || $minimum === false || $minimum < 0 || $minimum > 1000000) {
@@ -44,12 +52,16 @@ function validarMaterial(array $data): array
         $color = '';
         $compatibility = '';
     }
+    if (!in_array($category, ['Teclado', 'Mouse'], true)) {
+        $serialNumber = '';
+    }
 
     return [
         'category' => $category,
         'name' => $name,
         'color' => $color === '' ? null : $color,
         'compatibility' => $compatibility === '' ? null : $compatibility,
+        'serial_number' => $serialNumber === '' ? null : $serialNumber,
         'quantity' => $quantity,
         'minimum_quantity' => $minimum,
         'location' => $location === '' ? null : $location,
@@ -99,20 +111,102 @@ try {
         quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
         minimum_quantity INTEGER NOT NULL DEFAULT 1 CHECK (minimum_quantity >= 0),
         location VARCHAR(150),
+        serial_number VARCHAR(150),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )');
 
+    $db->exec('ALTER TABLE componentes ADD COLUMN IF NOT EXISTS serial_number VARCHAR(150)');
+    $db->exec("UPDATE componentes SET color = 'Preto (monocromático)'
+        WHERE color = 'Preto (impressora monocromática)'");
+    $db->exec("CREATE UNIQUE INDEX IF NOT EXISTS componentes_serial_number_unique
+        ON componentes (UPPER(serial_number)) WHERE serial_number IS NOT NULL AND serial_number <> ''");
+
+    $db->exec('CREATE TABLE IF NOT EXISTS movimentacoes_componentes (
+        id BIGSERIAL PRIMARY KEY,
+        componente_id BIGINT NOT NULL REFERENCES componentes(id) ON DELETE CASCADE,
+        quantidade INTEGER NOT NULL CHECK (quantidade > 0),
+        setor VARCHAR(150) NOT NULL,
+        destino VARCHAR(150),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )');
+
+    if ($method === 'GET' && ($_GET['action'] ?? '') === 'history') {
+        $statement = $db->prepare('SELECT id, quantidade, setor, destino, created_at
+            FROM movimentacoes_componentes WHERE componente_id = :id
+            ORDER BY created_at DESC, id DESC');
+        $statement->execute(['id' => validarId()]);
+        enviarJson($statement->fetchAll());
+    }
+
     if ($method === 'GET') {
-        $rows = $db->query('SELECT id, category, name, color, compatibility, quantity, minimum_quantity, location, created_at, updated_at
+        $rows = $db->query('SELECT id, category, name, color, compatibility, serial_number, quantity, minimum_quantity, location, created_at, updated_at
             FROM componentes ORDER BY category, name')->fetchAll();
         enviarJson($rows);
     }
 
+    if ($method === 'POST' && ($_GET['action'] ?? '') === 'consume') {
+        $id = validarId();
+        $data = lerJson();
+        $quantity = inteiroMaterial($data['quantity'] ?? null);
+        $sector = textoMaterial($data, 'sector');
+        $destination = textoMaterial($data, 'destination');
+
+        if ($quantity === false || $quantity < 1 || $quantity > 1000000) {
+            enviarJson(['success' => false, 'message' => 'Informe uma quantidade válida maior que zero.'], 422);
+        }
+        if ($sector === '' || tamanhoTexto($sector) > 150 || tamanhoTexto($destination) > 150) {
+            enviarJson(['success' => false, 'message' => 'Informe o setor e use no máximo 150 caracteres nos campos.'], 422);
+        }
+
+        $db->beginTransaction();
+        try {
+            $statement = $db->prepare("UPDATE componentes
+                SET quantity = quantity - :quantity, updated_at = NOW()
+                WHERE id = :id AND category IN ('Tinta', 'Toner') AND quantity >= :quantity
+                RETURNING quantity");
+            $statement->execute(['id' => $id, 'quantity' => $quantity]);
+            $remaining = $statement->fetchColumn();
+
+            if ($remaining === false) {
+                $check = $db->prepare('SELECT category, quantity FROM componentes WHERE id = :id');
+                $check->execute(['id' => $id]);
+                $material = $check->fetch();
+
+                if (!$material) {
+                    $db->rollBack();
+                    enviarJson(['success' => false, 'message' => 'Material não encontrado.'], 404);
+                }
+                if (!in_array($material['category'], ['Tinta', 'Toner'], true)) {
+                    $db->rollBack();
+                    enviarJson(['success' => false, 'message' => 'A baixa por setor está disponível somente para tintas e toners.'], 422);
+                }
+                $db->rollBack();
+                enviarJson(['success' => false, 'message' => 'A quantidade informada excede o estoque disponível.'], 422);
+            }
+
+            $movement = $db->prepare('INSERT INTO movimentacoes_componentes
+                (componente_id, quantidade, setor, destino)
+                VALUES (:id, :quantity, :sector, :destination)');
+            $movement->execute([
+                'id' => $id,
+                'quantity' => $quantity,
+                'sector' => $sector,
+                'destination' => $destination === '' ? null : $destination,
+            ]);
+            $db->commit();
+        } catch (Throwable $error) {
+            if ($db->inTransaction()) $db->rollBack();
+            throw $error;
+        }
+
+        enviarJson(['success' => true, 'quantity' => (int) $remaining, 'message' => 'Baixa registrada.']);
+    }
+
     if ($method === 'POST') {
         $data = validarMaterial(lerJson());
-        $statement = $db->prepare('INSERT INTO componentes (category, name, color, compatibility, quantity, minimum_quantity, location)
-            VALUES (:category, :name, :color, :compatibility, :quantity, :minimum_quantity, :location) RETURNING id');
+        $statement = $db->prepare('INSERT INTO componentes (category, name, color, compatibility, serial_number, quantity, minimum_quantity, location)
+            VALUES (:category, :name, :color, :compatibility, :serial_number, :quantity, :minimum_quantity, :location) RETURNING id');
         $statement->execute($data);
         enviarJson(['success' => true, 'id' => $statement->fetchColumn(), 'message' => 'Material cadastrado.'], 201);
     }
@@ -122,7 +216,7 @@ try {
         $data = validarMaterial(lerJson());
         $data['id'] = $id;
         $statement = $db->prepare('UPDATE componentes SET category = :category, name = :name, color = :color,
-            compatibility = :compatibility, quantity = :quantity, minimum_quantity = :minimum_quantity,
+            compatibility = :compatibility, serial_number = :serial_number, quantity = :quantity, minimum_quantity = :minimum_quantity,
             location = :location, updated_at = NOW() WHERE id = :id');
         $statement->execute($data);
         if ($statement->rowCount() === 0) {
@@ -146,5 +240,8 @@ try {
 
     enviarJson(['success' => false, 'message' => 'Método não permitido.'], 405);
 } catch (PDOException $error) {
+    if ($error->getCode() === '23505') {
+        enviarJson(['success' => false, 'message' => 'Já existe um material registrado com esse número de série.'], 409);
+    }
     erroBanco($error);
 }
